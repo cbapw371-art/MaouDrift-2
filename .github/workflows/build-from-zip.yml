@@ -79,8 +79,19 @@ jobs:
         run: |
           # Langsung build modul Fabric (Gradle 8.8) tanpa menyentuh build root yang lambat (ForgeGradle).
           set -o pipefail
-          java -classpath gradle/neoforge-wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain \
-            --no-daemon -p mcinterfacefabric1201 build --stacktrace 2>&1 | tee "$RUNNER_TEMP/build.log"
+          : > "$RUNNER_TEMP/build.log"
+          # Maven Central kadang membalas 429 (Too Many Requests): ulangi sampai 4x dengan jeda.
+          for i in 1 2 3 4; do
+            echo "=== Percobaan build $i ===" | tee -a "$RUNNER_TEMP/build.log"
+            if java -classpath gradle/neoforge-wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain \
+                 --no-daemon -p mcinterfacefabric1201 build --stacktrace 2>&1 | tee -a "$RUNNER_TEMP/build.log"; then
+              OK=1; break
+            fi
+            # Ulangi hanya kalau penyebabnya jaringan (429 / timeout), bukan error kode.
+            if grep -q "error: " "$RUNNER_TEMP/build.log" && ! grep -q "Received status code 429\|Read timed out\|Could not GET" "$RUNNER_TEMP/build.log"; then break; fi
+            echo "Gagal karena jaringan, tunggu 60 detik lalu coba lagi..."; sleep 60
+          done
+          [ "${OK:-0}" = "1" ] || exit 1
           mkdir -p out
           find mcinterfacefabric1201/build/libs -name '*.jar' ! -name '*-sources.jar' ! -name '*-dev.jar' -exec cp {} out/ \;
           ls -la out

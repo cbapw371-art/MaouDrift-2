@@ -77,9 +77,13 @@ jobs:
       - name: Build Fabric 1.20.1
         working-directory: ${{ steps.extract.outputs.root }}
         run: |
-          chmod +x gradlew
+          # Langsung build modul Fabric (Gradle 8.8) tanpa menyentuh build root yang lambat (ForgeGradle).
           set -o pipefail
-          ./gradlew --no-daemon buildFabric1201 --stacktrace 2>&1 | tee "$RUNNER_TEMP/build.log"
+          java -classpath gradle/neoforge-wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain \
+            --no-daemon -p mcinterfacefabric1201 build --stacktrace 2>&1 | tee "$RUNNER_TEMP/build.log"
+          mkdir -p out
+          find mcinterfacefabric1201/build/libs -name '*.jar' ! -name '*-sources.jar' ! -name '*-dev.jar' -exec cp {} out/ \;
+          ls -la out
 
       - name: Upload JAR
         if: success()

@@ -1,0 +1,98 @@
+name: Build Fabric dari ZIP
+
+# Cara pakai:
+#  1. Upload file .zip (hasil port) ke repo, di mana saja (mis. folder root atau "uploads/").
+#  2. Workflow jalan otomatis, mengekstrak zip ke folder SEMENTARA, lalu build di sana.
+#  3. File repo kamu TIDAK ditimpa / tidak ada commit dari workflow ini.
+#  4. Ambil jar di Actions -> run terbaru -> Artifacts -> "fabric-jar".
+# Bisa juga dijalankan manual (Run workflow) dan isi path zip kalau mau pilih zip tertentu.
+
+on:
+  push:
+    paths:
+      - '**.zip'
+  workflow_dispatch:
+    inputs:
+      zip_path:
+        description: 'Path zip di repo (kosong = zip terbaru yang ditemukan)'
+        required: false
+        default: ''
+
+concurrency:
+  group: build-zip-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout (hanya untuk mengambil zip)
+        uses: actions/checkout@v4
+
+      - name: Cari ZIP
+        id: findzip
+        run: |
+          ZIP="${{ github.event.inputs.zip_path }}"
+          if [ -z "$ZIP" ]; then
+            # Zip yang berubah di commit ini dulu, kalau tidak ada ambil zip terbaru di repo.
+            ZIP=$(git diff --name-only --diff-filter=AM HEAD~1 HEAD 2>/dev/null | grep -i '\.zip$' | head -n1 || true)
+          fi
+          if [ -z "$ZIP" ]; then
+            ZIP=$(git ls-files '*.zip' | while read f; do echo "$(git log -1 --format=%ct -- "$f") $f"; done | sort -rn | head -n1 | cut -d' ' -f2-)
+          fi
+          if [ -z "$ZIP" ] || [ ! -f "$ZIP" ]; then
+            echo "::error::Tidak ada file .zip di repo. Upload zip hasil port dulu."
+            exit 1
+          fi
+          echo "Memakai ZIP: $ZIP"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+
+      - name: Ekstrak ke folder sementara
+        id: extract
+        run: |
+          WORK="$RUNNER_TEMP/zipbuild"
+          rm -rf "$WORK" && mkdir -p "$WORK"
+          unzip -q "${{ steps.findzip.outputs.zip }}" -d "$WORK"
+          # Cari root proyek: folder yang berisi gradlew dan mcinterfacefabric1201.
+          ROOT=""
+          for d in "$WORK" $(find "$WORK" -maxdepth 3 -type d); do
+            if [ -f "$d/gradlew" ] && [ -d "$d/mcinterfacefabric1201" ]; then ROOT="$d"; break; fi
+          done
+          if [ -z "$ROOT" ]; then
+            echo "::error::Di dalam zip tidak ada folder proyek (gradlew + mcinterfacefabric1201)."
+            find "$WORK" -maxdepth 3 | head -50
+            exit 1
+          fi
+          echo "Root proyek: $ROOT"
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Build Fabric 1.20.1
+        working-directory: ${{ steps.extract.outputs.root }}
+        run: |
+          chmod +x gradlew
+          set -o pipefail
+          ./gradlew --no-daemon buildFabric1201 --stacktrace 2>&1 | tee "$RUNNER_TEMP/build.log"
+
+      - name: Upload JAR
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fabric-jar
+          path: ${{ steps.extract.outputs.root }}/out/*.jar
+          if-no-files-found: error
+
+      - name: Upload log build (kirim ke Claude kalau gagal)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: ${{ runner.temp }}/build.log
+          if-no-files-found: ignore
